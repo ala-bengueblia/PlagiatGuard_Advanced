@@ -1,36 +1,31 @@
-
-# src/plagiatguard/research_pipeline.py
-
 import re
-
 from plagiatguard.research_citations import analyze_citations
-from plagiatguard.research_web import search_web, compare_passages
+from plagiatguard.research_web import (
+    search_web,
+    compare_passages,
+)
 
 
-def segment_text(text, max_words=180, overlap=25, min_words=10):
-    """
-    Découpe un texte en passages exploitables pour la recherche.
-
-    Args:
-        text: Texte à découper.
-        max_words: Nombre maximal de mots par passage.
-        overlap: Nombre de mots partagés entre deux passages.
-        min_words: Nombre minimal de mots pour conserver un passage.
-
-    Returns:
-        Liste de passages textuels.
-    """
-
+def segment_text(
+    text,
+    max_words=180,
+    overlap=25,
+    min_words=10,
+):
     words = re.findall(r"\S+", text or "")
 
     if not words:
         return []
 
     if max_words <= 0:
-        raise ValueError("max_words doit être supérieur à zéro.")
+        raise ValueError(
+            "max_words doit être supérieur à zéro."
+        )
 
     if min_words <= 0:
-        raise ValueError("min_words doit être supérieur à zéro.")
+        raise ValueError(
+            "min_words doit être supérieur à zéro."
+        )
 
     if overlap < 0 or overlap >= max_words:
         raise ValueError(
@@ -70,6 +65,7 @@ class ResearchPipeline:
     def analyze(self, document_text, enable_web=False):
 
         passages = segment_text(document_text)
+
         local_matches = []
 
         # 1. Recherche locale FAISS / TF-IDF.
@@ -79,27 +75,29 @@ class ResearchPipeline:
 
                 hits = self.passage_index.search(
                     passage,
-                    top_k=self.top_k
+                    top_k=self.top_k,
                 )
 
                 for hit in hits:
 
-                    score = float(hit.get("score", 0.0))
+                    score = float(
+                        hit.get("score", 0.0)
+                    )
 
                     if score < self.local_threshold:
                         continue
 
                     metadata = hit.get("metadata", {})
 
-                    # Compatibilité avec les anciennes métadonnées
-                    # et avec une éventuelle liste de sources.
                     if isinstance(metadata, dict):
-                        if "sources" in metadata:
-                            sources = metadata["sources"]
-                        else:
-                            sources = [metadata]
+                        sources = metadata.get(
+                            "sources",
+                            [metadata],
+                        )
+
                     elif isinstance(metadata, list):
                         sources = metadata
+
                     else:
                         sources = []
 
@@ -113,14 +111,14 @@ class ResearchPipeline:
                             getattr(
                                 self.passage_index,
                                 "backend",
-                                "unknown"
-                            )
+                                "unknown",
+                            ),
                         ),
                         "segment_index": position,
                         "requires_manual_review": True,
                     })
 
-        # 2. Regroupement des correspondances locales identiques.
+        # 2. Regroupement des correspondances locales.
         grouped_matches = {}
 
         for hit in local_matches:
@@ -132,53 +130,59 @@ class ResearchPipeline:
 
             if key not in grouped_matches:
                 grouped_matches[key] = hit.copy()
+
             else:
                 existing = grouped_matches[key]
 
-                # Conserver le score maximal.
                 existing["score"] = max(
                     existing["score"],
-                    hit["score"]
+                    hit["score"],
                 )
 
-                # Fusionner les sources sans doublons.
                 for source in hit["source"]:
                     if source not in existing["source"]:
                         existing["source"].append(source)
 
-        local_matches = list(grouped_matches.values())
+        local_matches = list(
+            grouped_matches.values()
+        )
 
-        # 3. Recherche Web facultative.
+        # 3. Recherche Web indépendante.
         web_sources = []
         web_matches = []
+        web_error = None
 
         if enable_web:
 
             for passage in passages[:3]:
 
                 try:
-                    web_sources.extend(
-                        search_web(passage[:900], max_results=5)
+                    results = search_web(
+                        passage[:900],
+                        max_results=5,
                     )
 
-                except Exception as exc:
-                    web_sources.append({
-                        "provider": "tavily",
-                        "error": str(exc),
-                    })
+                    web_sources.extend(results)
 
-            # Déduplication des sources par URL.
+                except Exception as exc:
+                    web_error = str(exc)
+
+            # Déduplication par URL.
             unique_sources = {}
 
             for source in web_sources:
-                if source.get("url"):
-                    unique_sources[source["url"]] = source
+                url = source.get("url")
 
-            web_sources = list(unique_sources.values())
+                if url:
+                    unique_sources[url] = source
+
+            web_sources = list(
+                unique_sources.values()
+            )
 
             web_matches = compare_passages(
                 passages,
-                web_sources
+                web_sources,
             )
 
         # 4. Analyse des citations.
@@ -204,14 +208,14 @@ class ResearchPipeline:
         # 5. Rapport final.
         return {
             "status": "completed",
-
             "segment_count": len(passages),
 
             "local_match_count": len(local_matches),
 
+            "web_enabled": enable_web,
             "web_source_count": len(web_sources),
-
             "web_match_count": len(web_matches),
+            "web_error": web_error,
 
             "local_matches": sorted(
                 local_matches,

@@ -1,27 +1,16 @@
-import sys
-from pathlib import Path
-
-sys.path.insert(
-    0, str(Path(__file__).resolve().parent / "src")
-)
-
+import os
+import requests
 import streamlit as st
-
-from plagiatguard.config import MAX_UPLOAD_MB
-from plagiatguard.detector import analyze_bytes
-from plagiatguard.reporting import to_json, to_csv
-from plagiatguard.storage import (
-    init_db,
-    save_analysis,
-    audit,
-)
-
-init_db()
 
 st.set_page_config(
     page_title="PlagiatGuard Advanced",
     page_icon="🔎",
     layout="wide",
+)
+
+API_URL = os.getenv(
+    "PLAGIATGUARD_API_URL",
+    "http://127.0.0.1:8000",
 )
 
 st.title("🔎 PlagiatGuard Advanced")
@@ -31,9 +20,11 @@ st.warning(
     "pas une preuve automatique de plagiat."
 )
 
-username = st.text_input(
-    "Identifiant local",
-    value="local-user",
+st.sidebar.header("Authentification")
+
+token = st.sidebar.text_input(
+    "Token JWT",
+    type="password",
 )
 
 threshold = st.slider(
@@ -44,86 +35,187 @@ threshold = st.slider(
     step=0.05,
 )
 
-uploaded = st.file_uploader(
-    "Importer un document",
-    type=[
-        "txt", "md", "pdf", "docx", "odt",
-        "html", "htm", "xml", "json", "csv",
-        "tsv", "py", "js", "ts", "java",
-        "cpp", "c", "h", "ipynb",
-    ],
+enable_web = st.checkbox(
+    "Activer la recherche Web",
+    value=False,
+    help="La recherche Web nécessite une configuration serveur valide.",
 )
 
-if uploaded:
-    content = uploaded.getvalue()
+uploaded = st.file_uploader(
+    "Importer un document",
+    type=["txt", "pdf", "docx", "odt"],
+)
 
-    if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
-        st.error("Fichier trop volumineux.")
-    elif st.button("Analyser", type="primary"):
+if uploaded and st.button(
+    "Analyser",
+    type="primary",
+):
+
+    if not token:
+        st.error("Veuillez fournir un token JWT.")
+
+    else:
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+        }
+
+        files = {
+            "file": (
+                uploaded.name,
+                uploaded.getvalue(),
+                uploaded.type or "application/octet-stream",
+            )
+        }
+
+        params = {
+            "threshold": threshold,
+            "enable_web": enable_web,
+        }
+
         try:
             with st.spinner("Analyse en cours..."):
-                _, report = analyze_bytes(
-                    uploaded.name,
-                    content,
-                    threshold,
+
+                response = requests.post(
+                    f"{API_URL}/analyze/file",
+                    headers=headers,
+                    files=files,
+                    params=params,
+                    timeout=180,
                 )
 
-                save_analysis(
-                    username,
-                    uploaded.name,
-                    content,
-                    report["adjusted_similarity"],
-                    report,
-                )
+                response.raise_for_status()
 
-                audit(
-                    username,
-                    "analysis",
-                    uploaded.name,
-                )
+                result = response.json()
 
-            col1, col2 = st.columns(2)
+            report = result["report"]
+
+            st.success("Analyse terminée.")
+
+            col1, col2, col3 = st.columns(3)
 
             col1.metric(
                 "Similarité maximale",
-                f'{report["max_similarity"]:.1%}',
+                f'{report.get("max_similarity", 0):.1%}',
             )
 
             col2.metric(
-                "Score ajusté indicatif",
-                f'{report["adjusted_similarity"]:.1%}',
+                "Score ajusté",
+                f'{report.get("adjusted_similarity", 0):.1%}',
             )
+
+            col3.metric(
+                "Quota restant",
+                result.get("remaining_quota", "N/A"),
+            )
+
+            st.info(report.get("notice", ""))
+
+            st.subheader("Résultats de l'analyse classique")
 
             st.write(
-                "**Résultat :**",
                 "Correspondance à examiner"
-                if report["flagged"]
-                else "Aucune correspondance au-dessus du seuil",
+                if report.get("flagged")
+                else "Aucune correspondance au-dessus du seuil"
             )
 
-            st.info(report["notice"])
-
-            if report["matches"]:
-                st.subheader("Correspondances du corpus local")
+            if report.get("matches"):
                 st.dataframe(
                     report["matches"],
                     use_container_width=True,
                 )
+
+            advanced = report.get(
+                "advanced_research",
+                {},
+            )
+
+            if advanced.get("enabled"):
+
+                research = advanced.get("results", {})
+
+                st.subheader("Recherche sémantique locale")
+
+                st.metric(
+                    "Correspondances FAISS",
+                    research.get("local_match_count", 0),
+                )
+
+                if research.get("local_matches"):
+                    st.dataframe(
+                        research["local_matches"],
+                        use_container_width=True,
+                    )
+
+                st.subheader("Recherche Web")
+
+                st.write(
+                    "Recherche Web activée"
+                    if research.get("web_enabled")
+                    else "Recherche Web désactivée"
+                )
+
+                st.metric(
+                    "Sources Web",
+                    research.get("web_source_count", 0),
+                )
+
+                st.metric(
+                    "Correspondances Web",
+                    research.get("web_match_count", 0),
+                )
+
+                if research.get("web_error"):
+                    st.warning(research["web_error"])
+
+                if research.get("web_matches"):
+                    st.dataframe(
+                        research["web_matches"],
+                        use_container_width=True,
+                    )
+
+                if research.get("web_sources"):
+                    st.subheader("Sources externes")
+
+                    for source in research["web_sources"]:
+                        st.markdown(
+                            f"- [{source.get('title', 'Source')}]"
+                            f"({source.get('url', '')})"
+                        )
+
             else:
-                st.write("Aucune correspondance trouvée.")
+                st.warning(
+                    advanced.get(
+                        "message",
+                        "Recherche avancée indisponible.",
+                    )
+                )
 
             st.download_button(
                 "Télécharger le rapport JSON",
-                data=to_json(report),
+                data=__import__("json").dumps(
+                    report,
+                    indent=2,
+                    ensure_ascii=False,
+                ),
                 file_name="rapport.json",
                 mime="application/json",
             )
 
-            st.download_button(
-                "Télécharger les correspondances CSV",
-                data=to_csv(report),
-                file_name="correspondances.csv",
-                mime="text/csv",
+        except requests.exceptions.HTTPError as exc:
+            try:
+                detail = response.json().get(
+                    "detail",
+                    str(exc),
+                )
+            except Exception:
+                detail = str(exc)
+
+            st.error(f"Erreur API : {detail}")
+
+        except requests.exceptions.RequestException as exc:
+            st.error(
+                f"Impossible de contacter FastAPI : {exc}"
             )
 
         except Exception as exc:

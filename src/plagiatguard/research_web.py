@@ -1,6 +1,3 @@
-
-# src/plagiatguard/research_web.py
-
 import os
 import re
 import requests
@@ -14,14 +11,19 @@ def normalize(text):
 
 
 def search_web(query, max_results=5):
-    if os.getenv("ENABLE_WEB_SEARCH", "false").lower() not in {
-        "true", "1", "yes"
-    }:
+    enabled = os.getenv(
+        "ENABLE_WEB_SEARCH", "false"
+    ).lower() in {"true", "1", "yes"}
+
+    if not enabled:
         return []
 
     api_key = os.getenv("TAVILY_API_KEY")
+
     if not api_key:
-        raise RuntimeError("TAVILY_API_KEY n'est pas configurée.")
+        raise RuntimeError(
+            "TAVILY_API_KEY n'est pas configurée."
+        )
 
     response = requests.post(
         "https://api.tavily.com/search",
@@ -34,6 +36,7 @@ def search_web(query, max_results=5):
         },
         timeout=(5, 20),
     )
+
     response.raise_for_status()
 
     return [
@@ -52,20 +55,32 @@ def compare_passages(submitted_passages, sources):
 
     for submitted in submitted_passages:
         submitted = normalize(submitted)
+
         if len(submitted) < 40:
             continue
 
         for source in sources:
             snippet = normalize(source.get("snippet", ""))
+
             if len(snippet) < 20:
                 continue
 
-            vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+            vectorizer = TfidfVectorizer(
+                ngram_range=(1, 2)
+            )
+
             try:
-                matrix = vectorizer.fit_transform([submitted, snippet])
-                score = float(
-                    cosine_similarity(matrix[0:1], matrix[1:2])[0, 0]
+                matrix = vectorizer.fit_transform(
+                    [submitted, snippet]
                 )
+
+                score = float(
+                    cosine_similarity(
+                        matrix[0:1],
+                        matrix[1:2],
+                    )[0, 0]
+                )
+
             except ValueError:
                 continue
 
@@ -76,8 +91,14 @@ def compare_passages(submitted_passages, sources):
                     "score": score,
                     "source_title": source.get("title", ""),
                     "source_url": source.get("url", ""),
-                    "provider": source.get("provider", "unknown"),
+                    "provider": source.get(
+                        "provider", "unknown"
+                    ),
                     "requires_manual_review": True,
                 })
 
-    return sorted(matches, key=lambda item: item["score"], reverse=True)
+    return sorted(
+        matches,
+        key=lambda item: item["score"],
+        reverse=True,
+    )

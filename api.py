@@ -1,4 +1,5 @@
 
+import os
 import sys
 import logging
 import threading
@@ -76,10 +77,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("plagiatguard.api")
 
-
-# Initialisation de la base de données.
 init_db()
-
 
 app = FastAPI(
     title="PlagiatGuard Advanced API",
@@ -87,12 +85,10 @@ app = FastAPI(
         "API de détection de similarité textuelle, "
         "de recherche sémantique et d'analyse documentaire."
     ),
-    version="2.0.0",
+    version="2.1.0",
 )
 
-
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-
 
 ALLOWED_EXTENSIONS = {
     ".txt",
@@ -100,6 +96,29 @@ ALLOWED_EXTENSIONS = {
     ".docx",
     ".odt",
 }
+
+
+# ---------------------------------------------------------
+# CONFIGURATION DE LA RECHERCHE WEB
+# ---------------------------------------------------------
+
+def is_web_search_configured():
+    """
+    La recherche Web nécessite :
+    1. ENABLE_WEB_SEARCH=true dans le serveur.
+    2. Une clé TAVILY_API_KEY valide.
+    """
+
+    enabled = os.getenv(
+        "ENABLE_WEB_SEARCH", "false"
+    ).lower() in {"true", "1", "yes"}
+
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+
+    return enabled and bool(api_key)
+
+
+WEB_SEARCH_CONFIGURED = is_web_search_configured()
 
 
 # ---------------------------------------------------------
@@ -116,9 +135,7 @@ ip_lock = threading.Lock()
 def check_ip_rate_limit(request: Request):
     """
     Limite le nombre de requêtes par adresse IP.
-
-    Configuration adaptée à un environnement
-    mono-processus de développement.
+    Configuration mono-processus.
     """
 
     ip = (
@@ -287,8 +304,7 @@ def create_research_pipeline():
 @lru_cache(maxsize=1)
 def get_research_pipeline():
     """
-    Charge le pipeline une seule fois afin d'éviter
-    de recharger le modèle à chaque requête.
+    Charge le pipeline une seule fois.
     """
 
     if not RESEARCH_PIPELINE_AVAILABLE:
@@ -320,10 +336,17 @@ def reload_research_pipeline():
 # INTÉGRATION DE L'ANALYSE AVANCÉE
 # ---------------------------------------------------------
 
-def add_research_analysis(report: dict, text: str):
+def add_research_analysis(
+    report: dict,
+    text: str,
+    enable_web: bool = False,
+):
     """
     Ajoute les résultats de recherche sémantique
-    au rapport classique sans remplacer ses résultats.
+    et éventuellement Web au rapport classique.
+
+    La recherche Web est autorisée uniquement si
+    elle est demandée par le client ET configurée côté serveur.
     """
 
     pipeline = get_research_pipeline()
@@ -337,10 +360,24 @@ def add_research_analysis(report: dict, text: str):
 
         return report
 
+    # Contrôle de la configuration côté serveur.
+    web_active = (
+        enable_web
+        and is_web_search_configured()
+    )
+
+    if enable_web and not web_active:
+        logger.warning(
+            "Recherche Web demandée mais non configurée côté serveur."
+        )
+
     try:
 
         # Analyse documentaire avancée.
-        advanced_report = pipeline.analyze(text)
+        advanced_report = pipeline.analyze(
+            text,
+            enable_web=web_active,
+        )
 
         local_matches = advanced_report.get(
             "local_matches",
@@ -352,7 +389,7 @@ def add_research_analysis(report: dict, text: str):
             [],
         )
 
-        # Résultats détaillés du pipeline.
+        # Résultats détaillés.
         report["advanced_research"] = {
             "enabled": True,
 
@@ -362,10 +399,13 @@ def add_research_analysis(report: dict, text: str):
                 "unknown",
             ),
 
+            "web_requested": enable_web,
+            "web_configured": is_web_search_configured(),
+
             "results": advanced_report,
         }
 
-        # Calcul du meilleur score sémantique.
+        # Meilleur score sémantique local.
         max_semantic_score = max(
             (
                 float(match.get("score", 0.0))
@@ -374,7 +414,7 @@ def add_research_analysis(report: dict, text: str):
             default=0.0,
         )
 
-        # Résumé des différents moteurs.
+        # Résumé séparé des moteurs.
         report["similarity_summary"] = {
 
             "classic": {
@@ -407,11 +447,17 @@ def add_research_analysis(report: dict, text: str):
             },
 
             "web": {
+                "enabled": web_active,
+
                 "match_count": len(web_matches),
 
                 "source_count": advanced_report.get(
                     "web_source_count",
                     0,
+                ),
+
+                "error": advanced_report.get(
+                    "web_error",
                 ),
             },
 
@@ -419,6 +465,12 @@ def add_research_analysis(report: dict, text: str):
                 local_matches or web_matches
             ),
         }
+
+        if enable_web and not web_active:
+            report["advanced_research"]["web_message"] = (
+                "La recherche Web est demandée mais désactivée "
+                "ou non configurée sur le serveur."
+            )
 
     except Exception:
 
@@ -453,6 +505,8 @@ class TextRequest(BaseModel):
         le=0.99,
     )
 
+    enable_web: bool = False
+
 
 # ---------------------------------------------------------
 # VALIDATION DES FICHIERS
@@ -470,7 +524,6 @@ def validate_filename(filename: str | None):
             detail="Nom de fichier manquant.",
         )
 
-    # Évite de conserver un chemin fourni par le client.
     safe_name = Path(
         filename.replace("\\", "/")
     ).name
@@ -499,10 +552,9 @@ def health():
 
     return {
         "status": "ok",
-
-        "version": "2.0.0",
-
+        "version": "2.1.0",
         "research_pipeline": RESEARCH_PIPELINE_AVAILABLE,
+        "web_search_configured": is_web_search_configured(),
     }
 
 
@@ -516,11 +568,13 @@ def analyze_text_endpoint(
     user=Depends(require_role("analyst")),
 ):
     """
-    Analyse un texte avec le détecteur classique
-    et le pipeline de recherche avancé.
+    Analyse un texte avec :
+    - Détecteur classique.
+    - Recherche sémantique locale.
+    - Recherche Web facultative.
     """
 
-    # Vérification du quota utilisateur.
+    # Vérification du quota.
     allowed, remaining = consume_quota(
         user["sub"]
     )
@@ -545,9 +599,10 @@ def analyze_text_endpoint(
         report = add_research_analysis(
             report,
             payload.text,
+            enable_web=payload.enable_web,
         )
 
-        # 3. Enregistrement de l'analyse.
+        # 3. Enregistrement.
         save_analysis(
             user["sub"],
             "text-input.txt",
@@ -559,7 +614,7 @@ def analyze_text_endpoint(
             report,
         )
 
-        # 4. Journalisation.
+        # 4. Audit.
         audit(
             user["sub"],
             "analyze_text",
@@ -593,6 +648,7 @@ def analyze_text_endpoint(
 async def analyze_file(
     file: UploadFile = File(...),
     threshold: float = 0.55,
+    enable_web: bool = False,
     user=Depends(require_role("analyst")),
 ):
     """
@@ -612,7 +668,7 @@ async def analyze_file(
 
     try:
 
-        # Lecture limitée pour éviter les fichiers volumineux.
+        # Lecture limitée.
         content = await file.read(
             MAX_UPLOAD_BYTES + 1
         )
@@ -656,6 +712,7 @@ async def analyze_file(
             report = add_research_analysis(
                 report,
                 extracted_text,
+                enable_web=enable_web,
             )
 
         # 3. Enregistrement.
@@ -670,7 +727,7 @@ async def analyze_file(
             report,
         )
 
-        # 4. Journalisation.
+        # 4. Audit.
         audit(
             user["sub"],
             "analyze_file",
@@ -717,7 +774,6 @@ def reload_research_index(
 ):
     """
     Recharge l'index de recherche documentaire.
-
     Accessible uniquement aux administrateurs.
     """
 
