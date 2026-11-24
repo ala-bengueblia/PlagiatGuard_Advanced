@@ -1,0 +1,214 @@
+Étape 1 — Ouvrir le projet et activer l'environnement
+Ouvre PowerShell :
+cd "C:\Users\alabe\OneDrive\Bureau\2éme master\Éthique et recherche\PlagiatGuard_Advanced"
+
+
+Active l'environnement virtuel :
+.\.venv\Scripts\Activate.ps1
+
+
+Configure le chemin des modules Python :
+$env:PYTHONPATH = "$PWD\src"
+
+
+Vérifie Python et pip :
+python --version
+python -m pip --version
+
+
+Étape 2 — Vérifier les fichiers Python
+Vérifie la syntaxe de l'API :
+python -m py_compile api.py
+
+
+Vérifie les modules principaux :
+python -m py_compile .\src\plagiatguard\detector.py
+python -m py_compile .\src\plagiatguard\research_pipeline.py
+python -m py_compile .\src\plagiatguard\research_retrieval.py
+python -m py_compile .\src\plagiatguard\research_citations.py
+python -m py_compile .\src\plagiatguard\security.py
+
+
+Résultat attendu
+ Aucune erreur de syntaxe.
+Étape 3 — Reconstruire l'index FAISS
+Cette étape est nécessaire si tu as ajouté ou modifié des documents dans ton corpus.
+python scripts/build_faiss_index.py
+
+
+Tu dois retrouver un résultat similaire à :
+Documents trouvés : 3
+
+Nombre total de passages extraits : 3
+
+Index FAISS construit et sauvegardé.
+
+Passages indexés : 2
+Moteur utilisé : faiss
+
+INDEX FAISS CONSTRUIT AVEC SUCCÈS.
+
+
+Les nombres peuvent varier selon les documents présents.
+Étape 4 — Tester directement la recherche FAISS
+python -c "from plagiatguard.research_retrieval import PassageIndex; i=PassageIndex(); print(i.load()); print('Passages:',len(i.passages)); print('Backend:',i.backend); print('Premier passage:',i.passages[0])"
+
+
+Puis teste la recherche :
+python -c "from plagiatguard.research_retrieval import PassageIndex; i=PassageIndex(); i.load(); r=i.search('Artificial intelligence allows machines to learn from data',top_k=5); [print('\nScore:',x['score'],'\nPassage:',x['passage'],'\nSource:',x['metadata']) for x in r]"
+
+
+Tu dois retrouver des passages pertinents du corpus.
+Étape 5 — Tester le pipeline de recherche avancé
+python -c "from plagiatguard.research_retrieval import PassageIndex; from plagiatguard.research_pipeline import ResearchPipeline; i=PassageIndex(); i.load(); p=ResearchPipeline(i); r=p.analyze('Artificial intelligence allows machines to learn from data. Machine learning uses algorithms to identify patterns.'); print('Status:',r['status']); print('Passages:',r['segment_count']); print('Correspondances:',r['local_match_count']); [print('\nScore:',m['score'],'\nSource:',m['source'],'\nMoteur:',m['engine']) for m in r['local_matches']]"
+
+
+Résultat précédemment obtenu :
+Status: completed
+Passages: 1
+Correspondances: 1
+
+Score: 0.44851601123809814
+Moteur: faiss
+
+
+Étape 6 — Tester la sécurité et les utilisateurs
+Vérifie que le script de génération de JWT est disponible :
+python scripts/create_token.py --help
+
+
+Génère un token pour ton utilisateur existant :
+python scripts/create_token.py --username admin
+
+
+Le mot de passe sera demandé de manière interactive.
+
+Ne partage jamais le token généré et ne l'inscris pas dans le rapport.
+
+Tu peux également vérifier le fonctionnement du module de sécurité :
+python -c "from plagiatguard.security import authenticate; print('Module de sécurité importé correctement')"
+
+
+Étape 7 — Démarrer FastAPI
+Dans le premier terminal :
+python -m uvicorn api:app --reload
+
+
+Tu dois voir un message indiquant que le serveur fonctionne sur :
+http://127.0.0.1:8000
+
+
+Interfaces de test
+Swagger UI
+
+Tester les routes et envoyer des documents
+
+Ouvrir 
+
+Health Check
+
+Vérifier le statut de l'API
+
+Ouvrir 
+
+Étape 8 — Tester les routes de l'API
+Ouvre Swagger et clique sur Authorize.
+
+Saisis :
+Bearer TON_TOKEN_JWT
+
+
+Remplace TON_TOKEN_JWT par ton token réel, sans le partager.
+
+Test A : GET /health
+
+Aucune authentification n'est nécessaire.
+
+Résultat attendu :
+{
+  "status": "ok",
+  "version": "2.0.0",
+  "research_pipeline": true
+}
+
+
+Attention : ce résultat confirme que le module du pipeline est importable, pas nécessairement que l'index FAISS est effectivement chargé.
+
+Test B : POST /analyze/text
+
+Dans Swagger, utilise :
+{
+  "text": "Artificial intelligence allows machines to learn from data. Machine learning uses algorithms to identify patterns.",
+  "threshold": 0.55
+}
+
+
+Vérifie dans la réponse :
+- remaining_quota
+- report.adjusted_similarity
+- report.flagged
+- report.advanced_research.enabled
+- report.advanced_research.results.local_matches
+- report.similarity_summary.semantic
+Test C : POST /analyze/file
+
+Téléverse un fichier TXT, PDF ou DOCX contenant un texte de test.
+
+Vérifie que l'API retourne :
+- Le nom du fichier.
+- Les résultats du détecteur classique.
+- Les résultats de la recherche avancée.
+- Les sources correspondantes.
+Test D : POST /admin/reload-index
+
+Connecte-toi avec un compte administrateur et lance la requête.
+
+Résultat attendu :
+{
+  "status": "success",
+  "message": "Index de recherche rechargé.",
+  "engine": "faiss",
+  "passage_count": 2
+}
+
+
+Le nombre de passages dépend de ton index réel.
+Étape 9 — Démarrer Streamlit
+Ouvre un deuxième terminal PowerShell.
+
+Active l'environnement :
+cd "C:\Users\alabe\OneDrive\Bureau\2éme master\Éthique et recherche\PlagiatGuard_Advanced"
+
+
+.\.venv\Scripts\Activate.ps1
+
+
+$env:PYTHONPATH = "$PWD\src"
+
+
+Lance l'application :
+python -m streamlit run app.py
+
+
+L'interface devrait être accessible à l'adresse :
+http://localhost:8501
+
+
+Teste l'analyse d'un texte puis l'importation d'un document.
+
+À ce stade, rappelle-toi que l'interface Streamlit utilise directement le détecteur classique dans le code précédemment examiné. Le lancement de Streamlit ne signifie donc pas que toutes les fonctionnalités sécurisées de FastAPI y sont appliquées.
+Étape 10 — Exécuter les tests automatisés
+Commence par vérifier les dépendances :
+python -m pip show pytest
+
+
+Si pytest n'est pas installé :
+python -m pip install pytest
+
+
+Puis exécute :
+python -m pytest -v
+
+
+Pour voir les tests présents :
+Get-ChildItem .\tests -Recurse -File

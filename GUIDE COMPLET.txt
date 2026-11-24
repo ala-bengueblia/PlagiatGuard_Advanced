@@ -1,0 +1,429 @@
+GUIDE COMPLET — PLAGIATGUARD ADVANCED
+Installation, configuration, commandes et fonctionnement
+=========================================================
+
+1. PRÉREQUIS ET INSTALLATION
+
+Logiciels nécessaires :
+- Windows 10/11
+- Python
+- PowerShell
+- Git (facultatif)
+- Un éditeur comme VS Code (facultatif)
+
+Vérifier Python et pip :
+    python --version
+    python -m pip --version
+
+Installer Python depuis https://www.python.org/downloads/ si nécessaire.
+Pendant l'installation, cocher "Add Python to PATH".
+
+Se placer dans le projet :
+    cd "C:\Users\alabe\OneDrive\Bureau\2éme master\Éthique et recherche\PlagiatGuard_Advanced"
+
+Créer l'environnement virtuel si .venv n'existe pas :
+    python -m venv .venv
+
+Activer l'environnement :
+    .\.venv\Scripts\Activate.ps1
+
+Si PowerShell bloque l'activation :
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    .\.venv\Scripts\Activate.ps1
+
+Mettre pip à jour :
+    python -m pip install --upgrade pip
+
+Installer les dépendances du projet :
+    python -m pip install -r requirements.txt
+
+Vérifier les bibliothèques importantes :
+    python -m pip show fastapi
+    python -m pip show streamlit
+    python -m pip show faiss-cpu
+    python -m pip show sentence-transformers
+    python -m pip show scikit-learn
+
+Le projet utilise notamment FastAPI, Streamlit, FAISS, Sentence Transformers
+et les bibliothèques de traitement de texte déclarées dans requirements.txt.
+Respecter d'abord les versions de requirements.txt. Le premier chargement de
+all-MiniLM-L6-v2 peut télécharger le modèle depuis Internet si celui-ci n'est
+pas déjà en cache.
+
+IMPORTANT — CHEMIN PYTHON
+Le code du package est dans src/plagiatguard. Dans chaque nouveau terminal,
+après activation de .venv et depuis la racine du projet, exécuter :
+
+    $env:PYTHONPATH = "$PWD\src"
+
+Tester :
+    python -c "import plagiatguard; print('Package plagiatguard trouvé')"
+
+Si cette commande échoue, vérifier le dossier courant, l'existence de
+src\plagiatguard et l'activation de .venv.
+ModuleNotFoundError: No module named 'plagiatguard' est un problème de chemin
+d'importation Python, pas une preuve que l'index FAISS est endommagé.
+
+2. ORGANISATION ET RÔLE DES FICHIERS
+
+api.py                         API FastAPI
+app.py                         Interface Streamlit
+requirements.txt               Dépendances Python
+src/plagiatguard/detector.py   Détection classique de similarité
+src/plagiatguard/extractors.py Extraction de texte des fichiers
+src/plagiatguard/research_retrieval.py   Index et recherche FAISS
+src/plagiatguard/research_pipeline.py Pipeline de recherche documentaire
+src/plagiatguard/research_citations.py Analyse des citations
+src/plagiatguard/security.py   Authentification et JWT
+src/plagiatguard/storage.py    Persistance et base de données
+scripts/build_faiss_index.py   Construction de l'index documentaire
+scripts/create_token.py        Génération d'un token pour un compte existant
+data/corpus/                   Documents de référence
+artifacts/research_index/      Fichiers de l'index FAISS
+tests/                         Tests automatisés
+
+3. COMMENT LE SYSTÈME DÉTECTE LES SIMILITUDES
+
+PlagiatGuard combine plusieurs axes complémentaires. Les scores des méthodes
+différentes ne doivent pas être additionnés ni présentés comme un seul
+pourcentage global de plagiat.
+
+AXE A — SIMILARITÉ TEXTUELLE
+Le détecteur classique analyse le texte extrait et calcule des indicateurs de
+ressemblance. Le rapport peut contenir :
+- max_similarity ;
+- citation_overlap_ratio ;
+- adjusted_similarity ;
+- threshold ;
+- flagged.
+
+Le seuil par défaut observé dans l'API est 0.55. Un résultat qui dépasse un
+seuil indique un cas à examiner, mais ne prouve pas automatiquement un plagiat.
+
+AXE B — SIMILARITÉ SÉMANTIQUE : SENTENCE TRANSFORMERS + FAISS
+
+Modèle utilisé :
+    sentence-transformers/all-MiniLM-L6-v2
+
+A. Préparation du corpus :
+1. Les documents de référence sont placés dans data/corpus.
+2. Le texte est extrait des fichiers.
+3. Les textes sont découpés en passages (segmentation).
+4. Sentence Transformers transforme chaque passage en vecteur numérique,
+   appelé embedding.
+5. Les vecteurs sont enregistrés dans un index FAISS.
+6. Les métadonnées (nom et chemin de la source) sont conservées pour retrouver
+   le document d'origine.
+
+B. Analyse d'un nouveau document :
+1. Le texte du document soumis est extrait.
+2. Il est découpé en passages.
+3. Le même modèle transforme ces passages en embeddings.
+4. FAISS recherche les vecteurs les plus proches dans l'index.
+5. Le pipeline récupère les passages et leurs métadonnées.
+6. Les correspondances, scores et sources sont présentés dans le rapport.
+
+Rôle des composants :
+- Sentence Transformers : transforme le texte en vecteurs sémantiques.
+- Embedding : représentation numérique d'un passage.
+- Similarité cosinus : mesure la proximité entre deux vecteurs.
+- FAISS : recherche efficacement les vecteurs les plus proches.
+- Métadonnées : permettent de retrouver le fichier source.
+
+Formule de similarité cosinus :
+    cos(A,B) = (A . B) / (||A|| x ||B||)
+
+Une valeur plus élevée indique une proximité vectorielle plus importante.
+Les scores ne sont pas des pourcentages de plagiat et il n'existe pas de seuil
+universel permettant de conclure automatiquement au plagiat.
+
+Paramètres du pipeline connus :
+    top_k=5
+    local_threshold=0.25
+
+top_k=5 demande jusqu'à cinq correspondances candidates par passage.
+local_threshold est un paramètre du pipeline local ; il ne faut pas le
+confondre avec le seuil 0.55 du détecteur classique.
+
+Fichiers générés :
+    artifacts/research_index/passages.faiss
+    artifacts/research_index/passages.json
+
+passages.faiss contient l'index vectoriel. passages.json conserve les passages
+et leurs métadonnées.
+
+AXE C — CITATIONS ET RECHERCHE WEB
+Le pipeline analyse les citations et références. Une recherche Web est
+disponible en option, mais elle est désactivée par défaut (enable_web=False)
+dans le pipeline connu. Ne pas présenter la recherche Web comme active pour
+chaque analyse.
+
+LIMITES :
+- Une similarité élevée n'est pas une preuve automatique de plagiat.
+- Une similarité faible ne garantit pas l'absence de plagiat.
+- La qualité dépend du corpus, de l'extraction et du modèle.
+- Une vérification humaine reste indispensable.
+
+4. AJOUTER LES DOCUMENTS DE RÉFÉRENCE
+
+Placer les fichiers dans :
+    data\corpus
+
+Formats gérés par le script d'indexation connu :
+    .txt
+    .pdf
+    .docx
+    .odt
+
+Exemple :
+    data\corpus\document1.txt
+    data\corpus\document2.pdf
+    data\corpus\document3.docx
+
+Vérifier les fichiers :
+    Get-ChildItem .\data\corpus -Recurse -File
+
+Utiliser des documents lisibles et pertinents, et conserver les originaux.
+
+5. CONSTRUIRE OU RECONSTRUIRE L'INDEX FAISS
+
+Depuis la racine du projet, avec .venv activé et PYTHONPATH défini :
+    python scripts/build_faiss_index.py
+
+Le script recherche les documents du corpus, extrait le texte, segmente les
+contenus, calcule les embeddings et construit l'index FAISS.
+
+Vérifier les fichiers produits :
+    Get-ChildItem .\artifacts\research_index
+
+Fichiers attendus :
+    passages.faiss
+    passages.json
+
+Reconstruire l'index après ajout ou modification des documents du corpus.
+Il n'est pas nécessaire de le reconstruire à chaque analyse.
+
+6. TESTER L'IMPORT, L'INDEX ET LA RECHERCHE
+
+Préparer chaque nouveau terminal :
+    cd "C:\Users\alabe\OneDrive\Bureau\2éme master\Éthique et recherche\PlagiatGuard_Advanced"
+    .\.venv\Scripts\Activate.ps1
+    $env:PYTHONPATH = "$PWD\src"
+
+Tester l'import :
+    python -c "import plagiatguard; print('Import OK')"
+
+Charger l'index :
+    python -c "from plagiatguard.research_retrieval import PassageIndex; i=PassageIndex(); print(i.load()); print('Passages:',len(i.passages)); print('Backend:',i.backend); print('Premier passage:',i.passages[0] if i.passages else 'Aucun passage')"
+
+Tester la recherche sémantique :
+    python -c "from plagiatguard.research_retrieval import PassageIndex; i=PassageIndex(); i.load(); r=i.search('Artificial intelligence allows machines to learn from data',top_k=5); [print('\nScore:',x['score'],'\nPassage:',x['passage'],'\nSource:',x['metadata']) for x in r]"
+
+Tester le pipeline :
+    python -c "from plagiatguard.research_retrieval import PassageIndex; from plagiatguard.research_pipeline import ResearchPipeline; i=PassageIndex(); i.load(); p=ResearchPipeline(i); r=p.analyze('Artificial intelligence allows machines to learn from data. Machine learning uses algorithms to identify patterns.'); print('Status:',r['status']); print('Passages:',r['segment_count']); print('Correspondances:',r['local_match_count']); [print('\nScore:',m['score'],'\nSource:',m['source'],'\nMoteur:',m['engine']) for m in r['local_matches']]"
+
+Résultat attendu du pipeline : status completed si l'analyse aboutit, nombre
+de passages, nombre de correspondances, score et source. Les scores réels
+dépendent du contenu de data/corpus et de l'index construit.
+
+7. VÉRIFIER LA SYNTAXE PYTHON
+
+    python -m py_compile api.py
+    python -m py_compile app.py
+    python -m py_compile .\src\plagiatguard\detector.py
+    python -m py_compile .\src\plagiatguard\research_pipeline.py
+    python -m py_compile .\src\plagiatguard\research_retrieval.py
+    python -m py_compile .\src\plagiatguard\research_citations.py
+    python -m py_compile .\src\plagiatguard\security.py
+
+Aucune sortie d'erreur signifie que les fichiers contrôlés passent la
+vérification de syntaxe. Cela ne remplace pas les tests fonctionnels.
+
+8. AUTHENTIFICATION JWT
+
+Pour générer un token pour un compte existant :
+    python scripts/create_token.py --username admin
+
+Saisir le mot de passe lorsque le programme le demande.
+Ne jamais publier ni partager le token JWT. Si un token a été exposé, le
+considérer comme compromis et renouveler les identifiants/configurations
+de sécurité concernés.
+
+Dans Swagger, l'en-tête d'autorisation est de la forme :
+    Bearer VOTRE_TOKEN
+
+Remplacer VOTRE_TOKEN par le token obtenu.
+
+9. LANCER L'API FASTAPI
+
+Dans un premier terminal :
+    cd "C:\Users\alabe\OneDrive\Bureau\2éme master\Éthique et recherche\PlagiatGuard_Advanced"
+    .\.venv\Scripts\Activate.ps1
+    $env:PYTHONPATH = "$PWD\src"
+    python -m uvicorn api:app --reload
+
+Adresses :
+    http://127.0.0.1:8000
+    http://127.0.0.1:8000/docs
+    http://127.0.0.1:8000/health
+
+Endpoints connus :
+    GET  /health
+    POST /analyze/text
+    POST /analyze/file
+    POST /admin/reload-index
+
+Tester /health dans le navigateur :
+    http://127.0.0.1:8000/health
+
+Tester /analyze/text dans Swagger :
+1. Ouvrir http://127.0.0.1:8000/docs.
+2. Cliquer sur Authorize.
+3. Entrer Bearer suivi du token.
+4. Ouvrir POST /analyze/text puis Try it out.
+5. Utiliser ce corps JSON :
+
+    {
+      "text": "Artificial intelligence allows machines to learn from data. Machine learning uses algorithms to identify patterns.",
+      "threshold": 0.55
+    }
+
+6. Cliquer sur Execute et examiner la réponse.
+
+Examiner séparément les résultats classiques et advanced_research, notamment
+local_matches et citation_analysis. Les scores classiques et FAISS mesurent
+des choses différentes.
+
+Tester /analyze/file :
+1. Ouvrir POST /analyze/file.
+2. Cliquer sur Try it out.
+3. Sélectionner un fichier TXT, PDF, DOCX ou ODT.
+4. Exécuter et examiner le rapport.
+
+POST /admin/reload-index est réservé à l'administrateur. Utiliser cette route
+seulement si la version de api.py installée implémente le rechargement.
+Une réponse 501 signifie que cette fonctionnalité n'est pas disponible dans
+la version courante de la route ; ce n'est pas nécessairement une panne FAISS.
+
+10. LANCER STREAMLIT
+
+Garder le terminal FastAPI ouvert. Ouvrir un deuxième terminal :
+
+    cd "C:\Users\alabe\OneDrive\Bureau\2éme master\Éthique et recherche\PlagiatGuard_Advanced"
+    .\.venv\Scripts\Activate.ps1
+    $env:PYTHONPATH = "$PWD\src"
+    python -m streamlit run app.py
+
+Ouvrir :
+    http://localhost:8501
+
+Tester la saisie ou l'importation d'un document, lancer l'analyse puis examiner
+les indicateurs et les passages correspondants.
+
+Note d'architecture : dans la version examinée, app.py appelle directement le
+détecteur Python. Les mécanismes JWT, quotas et audit de FastAPI ne s'appliquent
+donc pas automatiquement à Streamlit si l'interface ne passe pas par l'API.
+
+11. TESTS AUTOMATISÉS
+
+Vérifier pytest :
+    python -m pip show pytest
+
+Installer si nécessaire :
+    python -m pip install pytest
+
+Lister les tests :
+    Get-ChildItem .\tests -Recurse -File
+
+Lancer tous les tests :
+    python -m pytest -v
+
+Rapport détaillé :
+    python -m pytest -v -ra
+
+PASSED indique un test réussi ; FAILED indique un test en échec. Examiner le
+message d'erreur avant de modifier le code.
+
+12. ORDRE CONSEILLÉ POUR UNE DÉMONSTRATION
+
+1. Activer l'environnement .venv.
+2. Définir PYTHONPATH.
+3. Vérifier le corpus et l'index.
+4. Démarrer FastAPI et contrôler /health.
+5. Ouvrir Swagger et s'authentifier si nécessaire.
+6. Démarrer Streamlit dans un deuxième terminal.
+7. Soumettre un document qui reprend un contenu du corpus.
+8. Montrer les passages retrouvés, les scores et les sources.
+9. Expliquer que le résultat nécessite une interprétation humaine.
+
+13. COMMANDES RAPIDES
+
+Préparer l'environnement :
+    cd "C:\Users\alabe\OneDrive\Bureau\2éme master\Éthique et recherche\PlagiatGuard_Advanced"
+    .\.venv\Scripts\Activate.ps1
+    $env:PYTHONPATH = "$PWD\src"
+
+Installer :
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+
+Construire l'index :
+    python scripts/build_faiss_index.py
+
+Tester l'import :
+    python -c "import plagiatguard; print('Import OK')"
+
+Tester l'index :
+    python -c "from plagiatguard.research_retrieval import PassageIndex; i=PassageIndex(); print(i.load()); print('Passages:',len(i.passages)); print('Backend:',i.backend)"
+
+Créer un token :
+    python scripts/create_token.py --username admin
+
+Lancer FastAPI :
+    python -m uvicorn api:app --reload
+
+Lancer Streamlit dans un autre terminal :
+    python -m streamlit run app.py
+
+Lancer les tests :
+    python -m pytest -v
+
+14. DÉPANNAGE
+
+ModuleNotFoundError: No module named 'plagiatguard'
+    $env:PYTHONPATH = "$PWD\src"
+Vérifier aussi que PowerShell est à la racine du projet et que .venv est actif.
+
+No module named 'faiss'
+    python -m pip show faiss-cpu
+Si absent, installer les dépendances du projet :
+    python -m pip install -r requirements.txt
+
+Index absent ou aucun passage :
+    Get-ChildItem .\data\corpus -Recurse -File
+    Get-ChildItem .\artifacts\research_index
+Puis reconstruire si nécessaire :
+    python scripts/build_faiss_index.py
+
+Port 8000 déjà utilisé :
+Arrêter l'ancien serveur avec CTRL+C, ou choisir un autre port :
+    python -m uvicorn api:app --reload --port 8001
+
+Token invalide :
+Vérifier qu'il est complet, non expiré et précédé de Bearer dans Swagger.
+
+Streamlit ne trouve pas plagiatguard :
+Dans le terminal Streamlit, refaire :
+    $env:PYTHONPATH = "$PWD\src"
+
+15. CONCLUSION
+
+PlagiatGuard Advanced combine une analyse textuelle classique, une recherche
+sémantique et une analyse des citations. Sentence Transformers transforme les
+passages en embeddings. FAISS recherche les vecteurs les plus proches dans le
+corpus. Le pipeline rassemble les correspondances et leurs sources.
+
+Le système aide à identifier les ressemblances ; il ne prononce pas
+automatiquement un jugement définitif de plagiat. L'interprétation doit tenir
+compte du contexte, des citations, des références et d'une vérification humaine.
+

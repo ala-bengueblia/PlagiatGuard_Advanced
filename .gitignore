@@ -1,0 +1,43 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Models and datasets
+*.pt
+*.pth
+*.onnx
+*.h5
+*.pkl
+*.joblib
+data/
+artifacts/
+
+# Logs and temporary files
+*.log
+logs/
+temp/
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db

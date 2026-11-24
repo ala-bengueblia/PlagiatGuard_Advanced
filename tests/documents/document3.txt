@@ -1,0 +1,2 @@
+La programmation informatique consiste à écrire des instructions
+pour résoudre des problèmes avec un ordinateur.
